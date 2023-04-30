@@ -1,0 +1,139 @@
+pipeline {
+    agent any
+
+    tools {
+        maven "maven:3.6.2"
+        jdk "jdk8"
+    }
+
+    stages {
+        stage("Tag Calculate") {
+            when { branch "release/*" }
+            steps {
+                script {
+                    sh "git fetch --tags"
+                    def tags = sh(script: "git tag --list --merged", returnStdout: true).trim()
+                    String lastTag
+                    if (tags) {
+                        lastTag = tags.split('\n').reverse()[0]
+                        env.VERSION = lastTag
+                    } else {
+                        lastTag = sh(script: "echo ${BRANCH_NAME} | cut -d'/' -f2", returnStdout: true).trim()
+                        env.VERSION = lastTag
+                        lastTag = lastTag + ".0"
+                    }
+                    def (major, minor, patch) = lastTag.split('\\.')
+                    def patchNum = 1
+                    patchNum += Integer.parseInt(patch)
+                    env.NEW_VERSION = "${major}.${minor}.${patchNum}"
+                    sh "mvn versions:set -DnewVersion=${NEW_VERSION}"
+                }
+            }
+        }
+
+        stage("Checking dependency list"){
+            when { branch "release/*" }
+            steps{
+                sh 'mvn dependency:list'
+            }
+        }
+
+        stage("Build") {
+            when { anyOf { branch "main"; branch "release/*"; branch "feature/*" } }
+            steps {
+                configFileProvider([configFile(fileId: 'global-mavem-xml', variable: 'MVN_SETTINGS')]) {
+                    sh "mvn -s $MVN_SETTINGS clean package"
+                }
+            }
+        }
+
+        stage("Check Feature For E2E message") {
+            when { branch "feature/*" }
+            steps {
+                script{
+                def lastCommitMessage = sh(script: 'git log -1 --pretty=format:%s', returnStdout: true).trim()
+                echo "Last commit message: ${lastCommitMessage}"
+                if (lastCommitMessage.contains("#e2e")) {
+                    withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/'
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/simulator/99-SNAPSHOT/'
+                }
+
+                   latest_simulator_snapshot= sh(returnStdout: true, script: 'ls -t simulator/99-SNAPSHOT/simulator-99*.jar | head -1').trim()
+                    latest_telemetry_snapshot= sh(returnStdout: true, script: 'ls -t telemetry/99-SNAPSHOT/telemetry-99*.jar | head -1').trim()
+                    sh "cp ${latest_telemetry_snapshot} telemetry.jar"
+                    sh "cp ${latest_simulator_snapshot} simulator.jar"
+                    sh "cp target/analytics-*.jar analytics.jar"
+                    sh "java -cp simulator.jar:telemetry.jar:analytics.jar com.lidar.simulation.Simulator"
+                    }
+                }
+            }
+        }
+
+        stage("E2E Tests (release)") {
+            when { anyOf { branch "release/*"} }
+            steps {
+                script{
+                withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-release-local/com/lidar/telemetry/'
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/simulator/99-SNAPSHOT/'
+                    
+                    telemetry_folder = sh(returnStdout: true, script: "cd ./telemetry/ && ls -d */ | grep ${env.VERSION} | head -1").trim()
+                    if (telemetry_folder == ""){
+                        error("telemetry and analytics versions do not match")
+                    }
+                    latest_telemetry_clean = sh(returnStdout: true, script:"basename ${telemetry_folder} '/'").trim()
+                    telemetry_path = "./telemetry/${latest_telemetry_clean}/telemetry-${latest_telemetry_clean}.jar"
+                    echo "telemetry ---> ${telemetry_path}"
+
+                    simulator_path= sh(returnStdout: true, script: 'ls -t simulator/99-SNAPSHOT/simulator-99*.jar | head -1').trim()
+                    echo "simulator path ---> ${simulator_path}"
+
+                    analytics_path = "./target/analytics-${NEW_VERSION}.jar"
+                    echo "analytics path ---> ${analytics_path}"
+
+                    sh "java -cp ${simulator_path}:${telemetry_path}:${analytics_path} com.lidar.simulation.Simulator"
+                    }
+                }
+            }
+        }
+
+        stage("E2E Tests (main)") {
+            when { anyOf { branch "main"} }
+            steps{
+                script{
+                    withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/'
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/simulator/99-SNAPSHOT/'
+                        latest_simulator_snapshot= sh(returnStdout: true, script: 'ls -t simulator/99-SNAPSHOT/simulator-99*.jar | head -1').trim()
+                        latest_telemetry_snapshot= sh(returnStdout: true, script: 'ls -t telemetry/99-SNAPSHOT/telemetry-99*.jar | head -1').trim()
+                        sh "cp ${latest_telemetry_snapshot} telemetry.jar"
+                        sh "cp ${latest_simulator_snapshot} simulator.jar"
+                        sh "cp ./target/analytics-*.jar analytics.jar"
+                        sh "java -cp simulator.jar:telemetry.jar:analytics.jar com.lidar.simulation.Simulator"
+                    }
+                }
+            }
+        }
+
+        stage("Deploy") {
+            when { anyOf { branch "main"; branch "release/*" } }
+            steps {
+                configFileProvider([configFile(fileId: 'global-mavem-xml', variable: 'MVN_SETTINGS')]) {
+                    sh "mvn -s $MVN_SETTINGS deploy -DskipTests=true"
+                }
+            }
+        }
+
+        stage("Tag Push") {
+            when { branch "release/*" }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'Gitlab-username-and-password', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                    sh 'git remote set-url origin "http://${GIT_USERNAME}:${GIT_PASSWORD}@gitlab/ofir-dev/analytics.git"'
+                    sh "git tag -a ${env.NEW_VERSION} -m '[ci-skip]'"
+                    sh "git push origin ${env.NEW_VERSION}"
+                }
+            }
+        }
+    }
+}

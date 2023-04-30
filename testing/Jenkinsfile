@@ -1,0 +1,48 @@
+pipeline {
+    agent any
+
+    tools {
+        maven "maven:3.6.2"
+        jdk "jdk8"
+    }
+
+    stages {
+
+        stage("Build") {
+            when { anyOf { branch "main"} }
+            steps {
+                configFileProvider([configFile(fileId: 'global-mavem-xml', variable: 'MVN_SETTINGS')]) {
+                    sh "mvn -s $MVN_SETTINGS clean package"
+                }
+            }
+        }
+
+        stage("E2E Tests") {
+            when { anyOf { branch "main"} }
+            steps {
+                script{
+                withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/analytics/99-SNAPSHOT/'
+                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/'
+                }
+
+                latest_telemetry_snapshot = sh(returnStdout: true, script: 'ls -t telemetry/99-SNAPSHOT/telemetry-99*.jar | head -1').trim()
+                latest_analytic_snapshot= sh(returnStdout: true, script: 'ls -t analytics/99-SNAPSHOT/analytics-99*.jar | head -1').trim()
+                sh "cp ${latest_analytic_snapshot} analytics.jar"
+                sh "cp ${latest_telemetry_snapshot} telemetry.jar"
+                sh "cp target/simulator-*.jar simulator.jar"
+                sh "java -cp simulator.jar:telemetry.jar:analytics.jar com.lidar.simulation.Simulator"
+                }
+            }
+        }
+
+        stage("Deploy") {
+            when { anyOf { branch "main" } }
+            steps {
+                configFileProvider([configFile(fileId: 'global-mavem-xml', variable: 'MVN_SETTINGS')]) {
+                    sh "mvn -s $MVN_SETTINGS deploy -DskipTests=true"
+                }
+            }
+        }
+    }
+}
