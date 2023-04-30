@@ -93,9 +93,10 @@ pipeline{
                     withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
                         sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/simulator/99-SNAPSHOT/'
                     }
-                    NEWEST_SIMULATOR_SNAPSHOT= sh(returnStdout: true, script: 'ls -t ./simulator/99-SNAPSHOT/simulator-99*.jar | head -1').trim()
-                    sh "cp ${NEWEST_SIMULATOR_SNAPSHOT} simulator.jar"
-                    sh "unzip ./target/*.zip"
+                    latest_simulator_snapshot= sh(returnStdout: true, script: 'ls -t ./simulator/99-SNAPSHOT/simulator-99*.jar | head -1').trim()
+                    sh "cp ${latest_simulator_snapshot} simulator.jar"
+                    file_to_uzip = sh(returnStdout: true, script: "cd ./target/ && ls | sort -V | tail -1").trim()
+                    sh "unzip ./target/${file_to_uzip}"
                     latest_analytic= sh(returnStdout: true, script: 'ls | grep analytics-').trim()
                     sh "java -cp ./simulator.jar:./telemetry-${latest_telemetry_clean}.jar:./analytics-${latest_analytics_clean}.jar com.lidar.simulation.Simulator"
                 }
