@@ -17,24 +17,24 @@ pipeline {
             }
         }
 
-        stage("E2E Tests") {
-            when { anyOf { branch "main"} }
-            steps {
-                script{
-                withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
-                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/analytics/99-SNAPSHOT/'
-                    sh 'wget -r -np -nH --cut-dirs 4 --user=$username --password=$password http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/'
-                }
+        stage("e2e tests"){
+    when { branch "main" }
+    steps {
+        script {
+            
+            withCredentials([usernamePassword(credentialsId: 'artifactory-username-password', passwordVariable: 'password', usernameVariable: 'username')]) {
+                def latest_analytics = sh(script: 'curl -s -u ${username}:${password} http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/analytics/99-SNAPSHOT/ | grep -E \'analytics-[0-9\\.]+.*\\.jar<\' | sed "s/<[^>]\\+>//g" | cut -d " " -f 1 | sort -V -r | head -n 1', returnStdout: true).trim()
+                sh "curl -u ${username}:${password} http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/analytics/99-SNAPSHOT/${latest_analytics} --output analytics.jar"
 
-                latest_telemetry_snapshot = sh(returnStdout: true, script: 'ls -t telemetry/99-SNAPSHOT/telemetry-99*.jar | head -1').trim()
-                latest_analytic_snapshot= sh(returnStdout: true, script: 'ls -t analytics/99-SNAPSHOT/analytics-99*.jar | head -1').trim()
-                sh "cp ${latest_analytic_snapshot} analytics.jar"
-                sh "cp ${latest_telemetry_snapshot} telemetry.jar"
+                def latest_telemetry = sh(script: 'curl -s -u ${username}:${password} http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/ | grep -E \'telemetry-[0-9\\.]+.*\\.jar<\' | sed "s/<[^>]\\+>//g" | cut -d " " -f 1 | sort -V -r | head -n 1', returnStdout: true).trim()
+                sh "curl -u ${username}:${password} http://artifactory:8081/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/${latest_telemetry} --output telemetry.jar"
                 sh "cp target/simulator-*.jar simulator.jar"
-                sh "java -cp simulator.jar:telemetry.jar:analytics.jar com.lidar.simulation.Simulator"
+                sh "java -cp ./simulator.jar:./telemetry.jar:./analytics.jar com.lidar.simulation.Simulator"
                 }
             }
         }
+    }
+
 
         stage("Deploy") {
             when { anyOf { branch "main" } }
@@ -44,5 +44,5 @@ pipeline {
                 }
             }
         }
-    }
+    } 
 }
